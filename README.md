@@ -3,7 +3,7 @@
 
 <p align="center">
   <a href="https://www.lilab-ecust.cn/markushclaim" target="_blank">
-    <img src="https://github.com/rwu527/SpaceExpander/raw/main/logo.png" alt="MarkushClaim Logo" width="250">
+    <img src="https://github.com/rwu527/SpaceExpander/raw/main/logo.png" alt="SpaceExpander Logo" width="250">
   </a>
 </p>
 
