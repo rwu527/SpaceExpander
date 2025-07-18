@@ -3,7 +3,7 @@
 
 <p align="center">
   <a href="https://www.lilab-ecust.cn/markushclaim" target="_blank">
-    <img src="https://github.com/rwu527/MarkushClaim/raw/main/logo.png" alt="MarkushClaim Logo" width="250">
+    <img src="https://github.com/rwu527/SpaceExpander/raw/main/logo.png" alt="MarkushClaim Logo" width="250">
   </a>
 </p>
 
@@ -24,10 +24,10 @@ It supports intelligent substructure analysis and systematic enumeration of chem
 ## Installation
 
 ```javascript
-git clone git@github.com:rwu527/MarkushClaim.git
-cd MarkushClaim
+git clone git@github.com:rwu527/SpaceExpander.git
+cd SpaceExpander
 conda env create -f environment.yml
-conda activate markush_claim
+conda activate SpaceExpander
 ```
 
 
