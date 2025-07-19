@@ -4,7 +4,8 @@ import shutil
 import logging
 import traceback
 from rdkit import Chem
-from rdkit.Chem import MolStandardize
+from rdkit.Chem.MolStandardize import rdMolStandardize
+from rdkit.Chem import Descriptors
 import pandas as pd
 from src.concrete_content import (
     generate_fragments,
@@ -15,6 +16,8 @@ from src.claims_generate import create_claims
 from src.digital import convert_numbers
 from src import global_counters
 
+
+
 # Configure logging
 logging.basicConfig(
     filename='application.log',
@@ -24,39 +27,107 @@ logging.basicConfig(
 
 
 def convert_sdf_to_csv(sdf_file, output_folder):
-    normalizer = MolStandardize.normalize.Normalizer()
-    fragment_chooser = MolStandardize.fragment.LargestFragmentChooser()
-    uncharger = MolStandardize.charge.Uncharger()
-    metal_disconnector = MolStandardize.MetalDisconnector()
-
-    suppl = Chem.SDMolSupplier(sdf_file)
+    # Initialize logger for this function
+    logger = logging.getLogger('sdf_converter')
+    logger.setLevel(logging.INFO)
+    
+    # Create handlers
+    console_handler = logging.StreamHandler()
+    file_handler = logging.FileHandler(os.path.join(output_folder, 'conversion.log'))
+    
+    # Create formatters and add to handlers
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    file_handler.setFormatter(formatter)
+    
+    # Add handlers to logger
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    
+    logger.info(f"Starting conversion of {sdf_file}")
+    
+    try:
+        # Initialize standardization tools
+        normalizer = rdMolStandardize.Normalizer()
+        fragment_chooser = rdMolStandardize.LargestFragmentChooser()
+        uncharger = rdMolStandardize.Uncharger()
+        metal_disconnector = rdMolStandardize.MetalDisconnector()
+    except Exception as e:
+        logger.error(f"Failed to initialize standardization tools: {str(e)}")
+        return None
+    
+    # Read SDF file
+    try:
+        suppl = Chem.SDMolSupplier(sdf_file)
+        mol_count = len(suppl)
+        logger.info(f"Found {mol_count} molecules in SDF file")
+    except Exception as e:
+        logger.error(f"Failed to read SDF file: {str(e)}")
+        return None
+    
+    if mol_count == 0:
+        logger.error("SDF file contains no molecules")
+        return None
+    
     data = []
-
-    for mol in suppl:
+    processed_count = 0
+    error_count = 0
+    
+    for idx, mol in enumerate(suppl):
         if mol is None:
+            logger.warning(f"Skipping invalid molecule at position {idx+1}")
+            error_count += 1
             continue
 
         try:
-            mol = MolStandardize.rdMolStandardize.Cleanup(mol)
+            # Save original SMILES for comparison
+            original_smiles = Chem.MolToSmiles(mol) if mol.GetNumAtoms() > 0 else ""
+            
+            # Standardization steps
             mol = metal_disconnector.Disconnect(mol)
+            mol = normalizer.normalize(mol)
             mol = fragment_chooser.choose(mol)
             mol = uncharger.uncharge(mol)
-            mol = normalizer.normalize(mol)
-
-            Chem.Kekulize(mol, clearAromaticFlags=True)
-            smiles = Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=True)
-            data.append([smiles])
-
+            
+            # Skip empty molecules
+            if mol is None or mol.GetNumAtoms() == 0:
+                logger.warning(f"Molecule at position {idx+1} became empty after standardization")
+                error_count += 1
+                continue
+                
+            # Sanitize and generate SMILES
+            Chem.SanitizeMol(mol)
+            smiles = Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=False)
+            
+            # Add molecular weight for debugging
+            mol_weight = Descriptors.MolWt(mol)
+            
+            data.append([smiles, mol_weight])
+            processed_count += 1
+            
+            # Log transformation if significant change
+            if original_smiles and smiles != original_smiles:
+                logger.info(f"Molecule {idx+1} transformed: {original_smiles} -> {smiles}")
+            
         except Exception as e:
-            logging.warning(f"Failed to convert molecule: {e}")
+            logger.error(f"Failed to process molecule at position {idx+1}: {str(e)}")
+            error_count += 1
+            continue
 
-    if data:
-        csv_file = os.path.join(output_folder, os.path.basename(sdf_file).replace(".sdf", ".csv"))
-        pd.DataFrame(data, columns=["SMILES"]).to_csv(csv_file, index=False)
-        logging.info(f"Converted {sdf_file} to CSV: {csv_file}")
-        return csv_file
+    logger.info(f"Processed {processed_count} molecules successfully, {error_count} errors")
+    
+    if processed_count > 0:
+        try:
+            csv_file = os.path.join(output_folder, os.path.basename(sdf_file).replace(".sdf", ".csv"))
+            df = pd.DataFrame(data, columns=["SMILES", "MolWeight"])
+            df.to_csv(csv_file, index=False)
+            logger.info(f"Saved {processed_count} SMILES to {csv_file}")
+            return csv_file
+        except Exception as e:
+            logger.error(f"Failed to write CSV file: {str(e)}")
+            return None
     else:
-        logging.error(f"Conversion failed: No valid molecules in {sdf_file}")
+        logger.error("Conversion failed: No valid molecules processed")
         return None
     
     
