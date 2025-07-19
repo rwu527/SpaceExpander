@@ -17,7 +17,7 @@
 
 ---
 
-MarkushClaim is a web-based platform that allows users to input molecular structures and automatically generate Markush claims.  
+SpaceExpander is a web-based platform that allows users to input molecular structures and automatically generate Markush claims.  
 It supports intelligent substructure analysis and systematic enumeration of chemical space for patent drafting and exploration.
 
 
