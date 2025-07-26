@@ -6,7 +6,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.lilab-ecust.cn/markushclaim" target="_blank"><strong>Visit the Online Platform</strong></a>
+  <a href="https://www.lilab-ecust.cn/markushclaim" target="_blank">
+    <img src="https://github.com/rwu527/SpaceExpander/raw/main/logo.png" alt="SpaceExpander Logo" width="500">
+  </a>
 </p>
 
 ---
