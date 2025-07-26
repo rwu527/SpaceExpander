@@ -1,14 +1,13 @@
 # SpaceExpander
 
-
-<p align="center">
-  <b>An innovative solution for automated drafting and expansion of Markush claims.</b>
-</p>
-
 <p align="center">
   <a href="https://www.lilab-ecust.cn/markushclaim" target="_blank">
     <img src="https://github.com/rwu527/SpaceExpander/raw/main/src/logo.png" alt="SpaceExpander Logo" width="300">
   </a>
+</p>
+
+<p align="center">
+  <b>An innovative solution for automated drafting and expansion of Markush claims.</b>
 </p>
 
 ---
