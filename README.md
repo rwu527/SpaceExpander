@@ -14,8 +14,7 @@
 SpaceExpander is a web-based platform that allows users to input molecular structures and automatically generate Markush claims.  
 It supports intelligent substructure analysis and systematic enumeration of chemical space for patent drafting and exploration.
 
-In addition to the online version, SpaceExpander also provides standalone executables compatible with Windows, macOS, and Linux.  
-These can be used offline without any dependencies or installation.  
+**Offline Usage**: Standalone executables are available for Windows, macOS, and Linux platforms. These provide full functionality without dependencies or installation.  
 Download here:  
 https://drive.google.com/drive/folders/1DNeaFxnVlkqT0lW7YxIK2sOQMCxz6SkM?usp=drive_link
 
@@ -38,6 +37,8 @@ conda activate SpaceExpander
 ```
 
 ## Usage
+
+Run the application with:
 
 ```javascript
 python main.py
