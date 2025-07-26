@@ -25,7 +25,6 @@ https://drive.google.com/drive/folders/1DNeaFxnVlkqT0lW7YxIK2sOQMCxz6SkM?usp=dri
 
 - Input molecular structures via SMILES or supported file formats
 - Automatically generate Markush claims based on molecular analysis
-- Systematic enumeration of chemical space
 - Intelligent substructure recognition and classification
 - Offline usage supported with standalone executables for major platforms
 
