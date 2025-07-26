@@ -36,6 +36,7 @@ git clone git@github.com:rwu527/SpaceExpander.git
 cd SpaceExpander
 conda env create -f environment.yml
 conda activate SpaceExpander
+```
 
 ## Usage
 
