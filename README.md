@@ -15,8 +15,7 @@
 
 ---
 
-SpaceExpander is a web-based platform that allows users to input molecular structures and automatically generate Markush claims.  
-It supports intelligent substructure analysis and systematic enumeration of chemical space for patent drafting and exploration.
+SpaceExpander is a web-based platform that allows users to input molecular structures and automatically generate Markush claims. It supports intelligent substructure analysis and systematic enumeration of chemical space for patent drafting and exploration.
 
 **Offline Usage**: Standalone executables are available for Windows, macOS, and Linux platforms. These provide full functionality without dependencies or installation.  
 Download here:  
