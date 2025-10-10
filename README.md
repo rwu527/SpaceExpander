@@ -1,7 +1,7 @@
 # SpaceExpander
 
 <p align="center">
-  <a href="https://www.lilab-ecust.cn/markushclaim" target="_blank">
+  <a href="https://www.lilab-ecust.cn/MarkushClaim" target="_blank">
     <img src="https://github.com/rwu527/SpaceExpander/raw/main/src/logo.png" alt="SpaceExpander Logo" width="300">
   </a>
 </p>
