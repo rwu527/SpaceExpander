@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <b>https://www.lilab-ecust.cn/markushclaim</b>
+  <b>https://www.lilab-ecust.cn/MarkushClaim</b>
 </p>
 <p align="center">
   <b>An innovative solution for automated drafting and expansion of Markush claims.</b>
