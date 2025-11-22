@@ -724,7 +724,7 @@ description_data = [
         "SMILE": "C#CC(C)CC*;C#CC(C)C*;C#CC(C)*;C#CC(CC)(C)*;C#CC(CCC)*;C#CCC(C)C*;C#CCC(C)*;C#CCCC(C)*;C#CCCCC*;C#CCCC*;C#CCC*;C#CC*;C#C*;CC#CC(C)*;CC#CCC*;CC#CC*;CC(C)(*)C#C;CC(C)C#C*;CCC#CC*;CCC#C*;CCC(*)C#C;CCCC#C*;*C(C)(C)C#C;*C(C)(C)CC#C;*C(C)C(C)C#C;*C(C)CC#C;*C(CC)C#C;*C(CC)CC#C;*CC(C)(C)C#C;*CC(CC)C#C;*CCC#C"
     },
     {
-        "Description": "substituted/unsubstituded aminos",
+        "Description": "substituted/unsubstituted aminos",
         "SMILE": "*N"
     },
     {
