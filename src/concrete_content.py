@@ -21,11 +21,27 @@ rdBase.DisableLog('rdApp.*')
 
 
 
+def clean_fragment_smiles(smiles):
+    if not isinstance(smiles, str):
+        return smiles
+    cleaned = smiles
+    replacements = {
+        r"\[CH\]": "C",
+        r"\[C@@H\]": "C",
+        r"\[C@H\]": "C",
+        r"\[@H\]": ""
+    }
+    for pattern, repl in replacements.items():
+        cleaned = re.sub(pattern, repl, cleaned)
+    return cleaned
+
+
 def read_data(file_path):
     try:
-        df = pd.read_csv(file_path, header=None) 
+        df = pd.read_csv(file_path, header=None)
+        df = df.applymap(clean_fragment_smiles)
         return df
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -444,6 +460,89 @@ def generate_fragments(file_path, output_folder):
     mcs_with_r, atom_indices, bond_indices, original_atom_mappings, original_bond_mappings = mark_mcs_with_r(
         molecule_list, mcs_smiles, output_folder, differences)
     
+    try:
+        base_mcs_mol = Chem.MolFromSmarts(mcs_smiles)
+        if base_mcs_mol is None:
+            raise ValueError("无法从 mcs_smiles 生成 Mol 对象")
+
+        for a in base_mcs_mol.GetAtoms():
+            a.SetAtomMapNum(a.GetIdx() + 1)
+
+        base_smiles_with_maps = Chem.MolToSmiles(base_mcs_mol, canonical=True)
+
+        replace_atom = {}
+        append_map = {}
+        n_orig_atoms = base_mcs_mol.GetNumAtoms()
+
+        for atom in mcs_with_r.GetAtoms():
+            if not atom.HasProp('atomLabel'):
+                continue
+            label = atom.GetProp('atomLabel')
+            if not label:
+                continue
+            idx = atom.GetIdx()
+            if idx < n_orig_atoms:
+                if atom.GetAtomicNum() == 0:
+                    replace_atom.setdefault(idx, []).append(label)
+                else:
+                    if label.startswith('X') or label.startswith('Z'):
+                        replace_atom.setdefault(idx, []).append(label)
+                    else:
+                        append_map.setdefault(idx, []).append(label)
+            else:
+                for nb in atom.GetNeighbors():
+                    nb_idx = nb.GetIdx()
+                    if nb_idx < n_orig_atoms:
+                        nb_atom = mcs_with_r.GetAtomWithIdx(nb_idx)
+                        if nb_atom.GetAtomicNum() == 0 or label.startswith('X') or label.startswith('Z'):
+                            replace_atom.setdefault(nb_idx, []).append(label)
+                        else:
+                            append_map.setdefault(nb_idx, []).append(label)
+                        break
+
+        replace_atom_single = {k: "".join(v) for k, v in replace_atom.items()}
+
+        import re
+        token_pattern = re.compile(r'(\[[^\]]+:(\d+)\])')
+
+        def token_replacer(match):
+            full_token = match.group(1)
+            mapnum = int(match.group(2))
+            atom_idx0 = mapnum - 1
+            if atom_idx0 in replace_atom_single:
+                # 完全替换该 atom token
+                return replace_atom_single[atom_idx0]
+            labels = append_map.get(atom_idx0)
+            if not labels:
+                return full_token
+            return full_token + "".join(f"({lab})" for lab in labels)
+
+        smiles_with_labels = token_pattern.sub(token_replacer, base_smiles_with_maps)
+        smiles_no_maps = re.sub(r':\d+\]', ']', smiles_with_labels)
+
+        # 方括号清理（保守）
+        def bracket_cleanup(m):
+            inner = m.group(1)
+            if re.search(r'[^A-Za-z0-9hH]', inner):
+                return f'[{inner}]'
+            if re.fullmatch(r'[nN][hH]', inner):
+                return inner
+            if re.fullmatch(r'[A-Za-z0-9]+', inner):
+                return inner
+            return f'[{inner}]'
+
+        smiles_cleaned = re.sub(r'\[([^\]]+)\]', bracket_cleanup, smiles_no_maps)
+        labeled_smiles_text = smiles_cleaned
+
+        smiles_output_path = os.path.join(formula_folder, "MCS_with_R.txt")
+        with open(smiles_output_path, "w", encoding="utf-8") as f:
+            f.write(labeled_smiles_text + "\n")
+        print(f"[INFO] Labeled SMILES saved to: {smiles_output_path}")
+
+    except Exception as e:
+        print(f"[WARN] 生成带 R/X/Z 标记的 SMILES 失败: {e}")
+
+
     if mcs_with_r:
         # Generate a larger image for cropping
         large_size = (800, 800)
@@ -770,10 +869,6 @@ def process_fragments(output_folder):
     # Step 5: Clean up empty folders
     remove_empty_folders(output_folder)
 
-
-from src.description import description_data 
-
-
 replace_map = {
     '\\': '',   # Replace backslash
     '+': '',    # Replace plus sign
@@ -815,29 +910,34 @@ replace_map = {
     'CH2CH2': '(CH2)2',
     'C≡N': 'CN', 
     'CH=O': 'CHO',
-    "N=N=N":'N3'
+    "N=N=N":'N3',
+    "SO₂O":"SO3H",
+    "SHO=O":"SO2H"
 }
 
+from src.description import description_data 
 
 
 def rule_description(output_folder, r_group_to_atom_info):  
     processed_folders = []
     
-    # Step 1: Read the identical_fragments file, treat as empty if it doesn't exist
     identical_fragments_file = os.path.join(output_folder, "identical_fragments.json")
     identical_fragments = {}
     if os.path.exists(identical_fragments_file):
         with open(identical_fragments_file, 'r') as f:
             identical_fragments = json.load(f)
 
-    # Step 2: Create the output file
     output_file_path = os.path.join(output_folder, "rule_description.txt")
-    with open(output_file_path, 'w', encoding='utf-8') as output_file:
-        
+    output_file_smiles_path = os.path.join(output_folder, "rule_description_smiles.txt")
+
+    with open(output_file_path, 'w', encoding='utf-8') as output_file, \
+         open(output_file_smiles_path, 'w', encoding='utf-8') as output_file_smiles:
+
         for folder in os.listdir(output_folder):
             folder_path = os.path.join(output_folder, folder)
             if os.path.isdir(folder_path) and not folder.endswith('_description') and folder.startswith('R'):
                 fragment_identifications = []
+                fragment_identifications_smiles = []
                 unmatched_smiles = {}
 
                 for file_name in os.listdir(folder_path):
@@ -846,9 +946,9 @@ def rule_description(output_folder, r_group_to_atom_info):
 
                         try:
                             with open(fragment_file_path, 'r', encoding='utf-8') as file:
-                                smiles = file.read().strip()  # Original SMILES
+                                smiles = file.read().strip()
                                 r_group = folder
-                                cleaned_smiles = standardize_smiles(clean_smiles(smiles))  # Cleaned SMILES
+                                cleaned_smiles = standardize_smiles(clean_smiles(smiles))
 
                                 shared_r_group_info = None
                                 for frag_key, frag_data in identical_fragments.items():
@@ -870,7 +970,6 @@ def rule_description(output_folder, r_group_to_atom_info):
                                         matched_description = entry.get("Description")
                                         break
                                 
-                                # Ensure the output includes forms content
                                 if shared_r_group_info: 
                                     other_r_groups = [r for r in shared_r_group_info["r_groups"] if r != r_group]
 
@@ -879,8 +978,14 @@ def rule_description(output_folder, r_group_to_atom_info):
                                             fragment_identifications.append(
                                                 f"{file_name}: forms {matched_description} with {', '.join(other_r_groups)}"
                                             )
+                                            fragment_identifications_smiles.append(
+                                                f"{file_name}: forms {matched_description} with {', '.join(other_r_groups)}"
+                                            )
                                         else:
                                             fragment_identifications.append(
+                                                f"{file_name}: forms other similar ring with {', '.join(other_r_groups)}"
+                                            )
+                                            fragment_identifications_smiles.append(
                                                 f"{file_name}: forms other similar ring with {', '.join(other_r_groups)}"
                                             )
                                             if file_name not in unmatched_smiles:
@@ -891,8 +996,14 @@ def rule_description(output_folder, r_group_to_atom_info):
                                             fragment_identifications.append(
                                                 f"{file_name}: forms {matched_description} with {', '.join(other_r_groups)}"
                                             )
+                                            fragment_identifications_smiles.append(
+                                                f"{file_name}: forms {matched_description} with {', '.join(other_r_groups)}"
+                                            )
                                         else:
                                             fragment_identifications.append(
+                                                f"{file_name}: forms other similar ring with {', '.join(other_r_groups)}"
+                                            )
+                                            fragment_identifications_smiles.append(
                                                 f"{file_name}: forms other similar ring with {', '.join(other_r_groups)}"
                                             )
                                             if file_name not in unmatched_smiles:
@@ -901,63 +1012,72 @@ def rule_description(output_folder, r_group_to_atom_info):
                                 else:
                                     if matched_description:
                                         fragment_identifications.append(f"{file_name}: {matched_description}")
+                                        fragment_identifications_smiles.append(f"{file_name}: {matched_description}")
                                         top_matches = fragment_extension(cleaned_smiles, folder)
                                         for desc in top_matches:  
                                             fragment_identifications.append(desc)
+                                            fragment_identifications_smiles.append(desc)
                                     else:
                                         if file_name not in unmatched_smiles:
                                             unmatched_smiles[file_name] = []
                                         unmatched_smiles[file_name].append(smiles)
 
-                                        # Process simple structure fragments
                                         mol = Chem.MolFromSmiles(cleaned_smiles)
                                         if mol:
                                             ring_info = mol.GetRingInfo()
                                             rings = ring_info.AtomRings()
 
                                             if not rings:
-                                                mol_with_h = Chem.AddHs(mol)  # Add hydrogen atoms
-                                                mol_formula = Chem.MolToSmiles(mol_with_h, canonical=True)
+                                                mol_smiles_list = mol_extension(cleaned_smiles, folder)
+                                                mol_smiles_list.insert(0, cleaned_smiles)
 
-                                                # Handle hydrogen representation in molecular formula
-                                                mol_formula = re.sub(r'\[H\]', 'H', mol_formula)
-                                                mol_formula = re.sub(r'\(H\)', 'H', mol_formula)
-                                                mol_formula = re.sub(r'H+', lambda m: f'H{len(m.group(0))}' if len(m.group(0)) > 1 else 'H', mol_formula)
+                                                for smi in mol_smiles_list:
+                                                    mol_ext = Chem.MolFromSmiles(smi)
+                                                    if not mol_ext:
+                                                        fragment_identifications.append(f"{file_name}: Invalid SMILES format")
+                                                        fragment_identifications_smiles.append(f"{file_name}: Invalid SMILES format")
+                                                        continue
 
-                                                for old_char, new_char in replace_map.items():
-                                                    mol_formula = mol_formula.replace(old_char, new_char)
+                                                    mol_with_h = Chem.AddHs(mol_ext)
+                                                    mol_formula = Chem.MolToSmiles(mol_with_h, canonical=True)
 
-                                                if mol_formula.startswith('='):
-                                                    fragment_identifications.append(f"{file_name}: {mol_formula}")
-                                                else:
-                                                    fragment_identifications.append(f"{file_name}: -{mol_formula}")                                               
-                                                    
-                                                if file_name in unmatched_smiles and smiles in unmatched_smiles[file_name]:
-                                                    unmatched_smiles[file_name].remove(smiles)
-                                                    if not unmatched_smiles[file_name]:
-                                                        del unmatched_smiles[file_name] 
-                                                    
-                                                mol_smiles = Chem.MolToSmiles(mol)
-                                                mol_matches = mol_extension(mol_smiles, folder)
-                                                for desc in mol_matches:  
-                                                    fragment_identifications.append(desc) 
-                                                    
+                                                    mol_formula = re.sub(r'\[H\]', 'H', mol_formula)
+                                                    mol_formula = re.sub(r'\(H\)', 'H', mol_formula)
+                                                    mol_formula = re.sub(r'H+', lambda m: f'H{len(m.group(0))}' if len(m.group(0)) > 1 else 'H', mol_formula)
+
+                                                    for old_char, new_char in replace_map.items():
+                                                        mol_formula = mol_formula.replace(old_char, new_char)
+
+                                                    if mol_formula.startswith('='):
+                                                        fragment_identifications.append(f"{file_name}: {mol_formula}")
+                                                        fragment_identifications_smiles.append(f"{file_name}: {smi}")
+                                                    else:
+                                                        fragment_identifications.append(f"{file_name}: -{mol_formula}")
+                                                        fragment_identifications_smiles.append(f"{file_name}: -{smi}")
+
+                                                    if smi == cleaned_smiles and file_name in unmatched_smiles and smiles in unmatched_smiles[file_name]:
+                                                        unmatched_smiles[file_name].remove(smiles)
+                                                        if not unmatched_smiles[file_name]:
+                                                            del unmatched_smiles[file_name]
+
                                             else:
                                                 fragment_identifications.append(f"{file_name}: No matching description found")
+                                                fragment_identifications_smiles.append(f"{file_name}: No matching description found")
                                         else:
                                             fragment_identifications.append(f"{file_name}: Invalid SMILES format")
-                                                                  
+                                            fragment_identifications_smiles.append(f"{file_name}: Invalid SMILES format")
+
                         except Exception as e:
                             error_message = f"Error reading file: {fragment_file_path}, {e}"
-                                                    
+                            
                 if fragment_identifications:
                     processed_folders.append({
                         "folder": folder,
                         "file_names": unmatched_smiles,
-                        "identifications": fragment_identifications
+                        "identifications": fragment_identifications,
+                        "identifications_smiles": fragment_identifications_smiles
                     })
                     
-        # Sort processed folders in descending order by the first numeric part in the folder name
         processed_folders.sort(
             key=lambda x: int(subscript_to_int(x["folder"].split('_')[0][1:])), 
             reverse=False
@@ -965,10 +1085,13 @@ def rule_description(output_folder, r_group_to_atom_info):
 
         for entry in processed_folders:
             output_file.write(f"Folder: {entry['folder']}\n")
-            for identification in entry["identifications"]:
+            output_file_smiles.write(f"Folder: {entry['folder']}\n")
+            for identification, identification_smiles in zip(entry["identifications"], entry["identifications_smiles"]):
                 output_file.write(f"  {identification}\n")
+                output_file_smiles.write(f"  {identification_smiles}\n")
 
     return processed_folders
+
 
 
 def subscript_to_int(subscript_str):
