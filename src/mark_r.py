@@ -2,13 +2,19 @@
 import io
 import os
 import random
+import re
 from tkinter import Image
 from rdkit import Chem
 from rdkit.Chem import rdmolops
 from PIL import Image
 from rdkit.Chem import Draw, AllChem
+from rdkit import DataStructs
 from rdkit.Chem.Draw import MolDraw2DCairo
+from copy import deepcopy
 from src.fragment import fragment_and_draw, sanitize_filename
+from src.extend_frag import fragment_data  
+from src.extend import get_sparse_fingerprint, parse_fingerprint, calculate_tanimoto
+
 from src import global_counters
 
 
@@ -396,143 +402,396 @@ def mark_nest_mcs_with_r(mcs_mapping, output_folder):
 
         mcs_mapping[mcs_smarts]['r_group_mapping'] = r_group_mapping
         fragment_and_draw(molecule_list, molecule_index, original_atom_mappings, original_bond_mappings, output_folder)
+
+        import re
+
+        try:
+            mol_for_smiles = Chem.Mol(mcs_with_r)
+
+            for atom in mol_for_smiles.GetAtoms():
+                if atom.HasProp('atomLabel'):
+                    label = atom.GetProp('atomLabel')
+                    if isinstance(label, str) and label.startswith('R'):
+                        digits = ''.join(ch for ch in label if ch.isdigit())
+                        if digits:
+                            try:
+                                atom.SetAtomMapNum(int(digits))
+                            except Exception:
+                                pass
+
+            raw_smiles = Chem.MolToSmiles(mol_for_smiles, canonical=False)
+
+            smiles_with_r = raw_smiles
+            replaced = set()
+            for atom in mol_for_smiles.GetAtoms():
+                if atom.HasProp('atomLabel'):
+                    label = atom.GetProp('atomLabel')
+                    if isinstance(label, str) and label.startswith('R'):
+                        num = ''.join(ch for ch in label if ch.isdigit())
+                        if not num or num in replaced:
+                            continue
+                        pattern = re.compile(r'\[[^\]]*:' + re.escape(num) + r'\]')
+                        smiles_with_r, nsubs = pattern.subn(label, smiles_with_r, count=1)
+                        if nsubs == 0:
+                            pattern_alt = re.compile(r'\[[^\]]*' + re.escape(num) + r'\]')
+                            smiles_with_r, _ = pattern_alt.subn(label, smiles_with_r, count=1)
+                        replaced.add(num)
+
+            txt_path = os.path.join(output_folder, "mcs_with_r_smiles.txt")
+            with open(txt_path, "a", encoding="utf-8") as f:
+                f.write(f"{i}. {smiles_with_r}\n")
+
+        except Exception as e:
+            print(f"[Warning] Failed to write R-labeled SMILES for {mcs_smarts}: {e}")
+
         
-    generated_smiles = extend_mcs_with_r(valid_molecules, output_folder)
-    extend_mcs_with_ring(generated_smiles, output_folder)
+    generated_smiles, original_smiles = extend_mcs_with_r(valid_molecules, output_folder)
+    extend_mcs_with_ring(original_smiles, output_folder)
     
     global_counters.global_r_group_counter = max_r_in_mcs
     return marked_r_groups
 
 
-from copy import deepcopy
-
-
-def extend_mcs_with_r(valid_molecules, output_folder):
-
-    # List to store all generated molecules' SMILES to check for duplicates
-    generated_smiles = set()
-    
-    def is_equivalent_to_existing(smiles, existing_smiles_set):
-        mol1 = Chem.MolFromSmiles(smiles)
-        if mol1 is None:
-            return False
-        smi1 = Chem.MolToSmiles(mol1, canonical=True)
-        
-        for ex_smiles in existing_smiles_set:
-            mol2 = Chem.MolFromSmiles(ex_smiles)
-            if mol2 is None:
-                continue
-            smi2 = Chem.MolToSmiles(mol2, canonical=True)
-            if smi1 == smi2:
-                return True
+def is_equivalent_to_existing(smiles, existing_smiles_set):
+    mol1 = Chem.MolFromSmiles(smiles)
+    if mol1 is None:
         return False
+    smi1 = Chem.MolToSmiles(mol1, canonical=True)
     
-    for i, mcs_with_r in enumerate(valid_molecules):
-        smiles = Chem.MolToSmiles(mcs_with_r)
-        generated_smiles.add(smiles)
-    print(f'1.{generated_smiles}')
-           
-    # Start processing the molecules (using i starting from 1)
-    for i, mcs_with_r in enumerate(valid_molecules):
-        smiles = Chem.MolToSmiles(mcs_with_r)
+    for ex_smiles in existing_smiles_set:
+        mol2 = Chem.MolFromSmiles(ex_smiles)
+        if mol2 is None:
+            continue
+        smi2 = Chem.MolToSmiles(mol2, canonical=True)
+        if smi1 == smi2:
+            return True
+    return False
+    
+    
+def generate_star_extensions(mol):
+    extended_mols = []
 
-        if mcs_with_r is None:
-            raise ValueError(f"Invalid input molecule (mcs_with_r is None), molecule index: {i + 1}")  # i starts from 1
-        if is_complex_bicyclic(mcs_with_r):
-            # print(f"Created bridged ring after expansion, skipping: {smile}")
-            continue 
-        # Create a copy of the molecule to avoid modifying the original object
-        mol = Chem.RWMol(mcs_with_r)
-        if mol is None:
-            raise ValueError(f"Unable to create a molecule copy, molecule index: {i + 1}")  # i starts from 1
+    # count complex bicyclic systems
+    ring_info = mol.GetRingInfo()
+    atom_rings = ring_info.AtomRings()
 
-        # Get all asterisk atom indices
-        asterisk_indices = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetSymbol() == '*']
-        if not asterisk_indices:
-            raise ValueError(f"No asterisk atoms in molecule {i + 1}")  # i starts from 1
+    complex_ring_count = 0
+    for i in range(len(atom_rings)):
+        for j in range(i + 1, len(atom_rings)):
+            shared = set(atom_rings[i]) & set(atom_rings[j])
+            if len(shared) > 1:
+                complex_ring_count += 1
+                break
 
-        # Remove the asterisk atom at index 0 (if it exists)
-        move_asterisk_idx = asterisk_indices[0]
-        if move_asterisk_idx == 0:
-            # Remove the original asterisk connections
-            for bond in mol.GetAtomWithIdx(move_asterisk_idx).GetBonds():
-                mol.RemoveBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
-            mol.RemoveAtom(move_asterisk_idx)  # Remove the atom itself
+    allow_complex = complex_ring_count < 3
 
-        # Get connected atom information for the asterisk atom (after removal if index 0)
-        connected_atoms = [bond.GetOtherAtomIdx(move_asterisk_idx)
-                           for bond in mol.GetAtomWithIdx(move_asterisk_idx).GetBonds()]
+    # find star
+    star_atoms = [a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() == '*']
+    if not star_atoms:
+        return extended_mols
 
-        # Find valid positions for relocation
-        valid_positions = []
-        for atom in mol.GetAtoms():
-            if atom.GetSymbol() == 'C' and atom.GetIdx() != move_asterisk_idx:
-                neighbors = [bond.GetOtherAtomIdx(atom.GetIdx()) for bond in atom.GetBonds()]
+    star_idx = star_atoms[0]
+    star_bonds = mol.GetAtomWithIdx(star_idx).GetBonds()
+    if len(star_bonds) != 1:
+        return extended_mols
 
-                # Exclude * and R atoms in the neighbors
-                if all(mol.GetAtomWithIdx(n).GetSymbol() not in ['*', 'R'] for n in neighbors):
-                    # Check if the atom can form an additional bond (i.e., has an available valence)
-                    if atom.GetNumImplicitHs() > 0 or len(neighbors) < atom.GetTotalValence():
-                        valid_positions.append(atom.GetIdx())
-                    else:
-                        # If the atom already has a connection to * (not index 0), we need to flag it
-                        for bond in atom.GetBonds():
-                            if bond.GetOtherAtomIdx(atom.GetIdx()) in asterisk_indices:
-                                break
+    anchor_idx = star_bonds[0].GetOtherAtomIdx(star_idx)
 
-        if not valid_positions:
+    # find ring system containing anchor
+    ring_atoms = set()
+    for ring in atom_rings:
+        if anchor_idx in ring:
+            ring_atoms.update(ring)
+
+    if not ring_atoms:
+        return extended_mols
+
+    for target_idx in ring_atoms:
+        if target_idx == anchor_idx:
+            continue
+
+        target_atom = mol.GetAtomWithIdx(target_idx)
+
+        if target_atom.GetSymbol() != 'C':
+            continue
+
+        if any(
+            mol.GetAtomWithIdx(b.GetOtherAtomIdx(target_idx)).GetSymbol() in ['*', 'R']
+            for b in target_atom.GetBonds()
+        ):
+            continue
+
+        # if this is a complex bicyclic position and not allowed, skip
+        if not allow_complex:
+            shared_count = 0
+            for ring in atom_rings:
+                if target_idx in ring and anchor_idx in ring:
+                    shared_count += 1
+            if shared_count > 1:
+                continue
+
+        mol_copy = deepcopy(mol)
+
+        mol_copy.RemoveBond(star_idx, anchor_idx)
+        mol_copy.AddBond(star_idx, target_idx, Chem.BondType.SINGLE)
+
+        try:
+            Chem.SanitizeMol(mol_copy)
+        except Exception:
+            continue
+
+        extended_mols.append((mol_copy, target_idx))
+
+    return extended_mols
+
+
+def apply_fragment_extension_with_r(mol, folder, num_input, r_numbers=None):
+    if mol is None:
+        return []
+
+    if is_complex_bicyclic(mol):
+        return []
+
+    if num_input == 1:
+        top_n = 6
+    elif num_input == 2:
+        top_n = 4
+    elif num_input == 3:
+        top_n = 3
+    elif num_input == 4:
+        top_n = 2
+    else:
+        top_n = 1
+
+    if r_numbers is None:
+        r_numbers = []
+
+    input_star_atoms = [a for a in mol.GetAtoms() if a.GetSymbol() == '*']
+    if not input_star_atoms:
+        return []
+
+    input_star_positions = [a.GetIdx() for a in input_star_atoms]
+    cleaned_smiles = Chem.MolToSmiles(mol)
+    input_starts_with_star_eq = cleaned_smiles.startswith("*=")
+
+    try:
+        target_fp_str = get_sparse_fingerprint(cleaned_smiles)
+        target_fp = parse_fingerprint(target_fp_str)
+    except ValueError:
+        return []
+
+    def valid_fragment(frag_mol):
+        if frag_mol is None:
+            return False
+        ri = frag_mol.GetRingInfo()
+        if ri.NumRings() == 0:
+            return False
+        for ring in ri.AtomRings():
+            for idx in ring:
+                atom = frag_mol.GetAtomWithIdx(idx)
+                for nb in atom.GetNeighbors():
+                    if nb.GetIdx() not in ring and nb.GetSymbol() != '*':
+                        return False
+        stars = [a for a in frag_mol.GetAtoms() if a.GetSymbol() == '*']
+        if not stars:
+            return False
+        for a in stars:
+            if a.IsInRing():
+                return False
+            connected_to_ring = False
+            for nb in a.GetNeighbors():
+                bond = frag_mol.GetBondBetweenAtoms(a.GetIdx(), nb.GetIdx())
+                if nb.IsInRing():
+                    if input_starts_with_star_eq and bond.GetBondType() == Chem.BondType.DOUBLE:
+                        connected_to_ring = True
+                    elif not input_starts_with_star_eq and bond.GetBondType() == Chem.BondType.SINGLE:
+                        connected_to_ring = True
+            if not connected_to_ring:
+                return False
+        return True
+
+    candidates = []
+    for frag_smiles, frag_fp_str in fragment_data.items():
+        if not isinstance(frag_smiles, str):
+            continue
+        if "@" in frag_smiles or "/" in frag_smiles or "\\" in frag_smiles:
+            continue
+        brackets = re.findall(r"\[.*?\]", frag_smiles)
+        if any(b not in ["[nH]", "[SH]"] for b in brackets):
+            continue
+        frag_starts_with_star_eq = frag_smiles.startswith("*=")
+        if input_starts_with_star_eq != frag_starts_with_star_eq:
             continue
 
         try:
-            for idx, pos in enumerate(valid_positions):
-                # Create a deep copy of the original molecule to modify
-                mol_copy = deepcopy(mol)  
-                if is_complex_bicyclic(mol_copy):
-                    # print(f"Created bridged ring after expansion, skipping: {smile}")
-                    continue 
+            ext_mol = Chem.MolFromSmiles(frag_smiles)
+        except Exception:
+            continue
+        if ext_mol is None or not valid_fragment(ext_mol):
+            continue
+        try:
+            frag_fp = parse_fingerprint(frag_fp_str)
+        except Exception:
+            continue
+        sim = calculate_tanimoto(target_fp, frag_fp)
+        candidates.append((sim, ext_mol, frag_smiles))
 
-                # Add the new asterisk atom at a valid position
-                new_asterisk_idx = mol_copy.AddAtom(Chem.Atom(0))  # Create new '*' atom
-                mol_copy.AddBond(new_asterisk_idx, pos, Chem.BondType.SINGLE)  # Connect it to the selected position
+    if not candidates:
+        print(f"[DEBUG] Input: {cleaned_smiles}, no valid fragment candidates.")
+        return []
 
-                # Get SMILES for the modified molecule
-                extend_smiles = Chem.MolToSmiles(mol_copy)
+    candidates.sort(reverse=True, key=lambda x: x[0])
+    top_candidates = candidates[:top_n]
 
-                if extend_smiles in generated_smiles:
-                    continue
-                if is_equivalent_to_existing(extend_smiles, generated_smiles):
-                    continue
-                generated_smiles.add(extend_smiles)
-                
-                # Sanitize the molecule to ensure it is valid
+    results = []
+    for sim, frag_mol, frag_smi in top_candidates:
+        frag_rw = Chem.RWMol(frag_mol)
+
+        frag_star_atoms = [a for a in frag_rw.GetAtoms() if a.GetSymbol() == '*']
+        frag_star_positions = [a.GetIdx() for a in frag_star_atoms]
+
+        print(f"[DEBUG] Original * positions in fragment: {frag_star_positions}")
+
+        num_to_add = len(input_star_positions) - len(frag_star_positions)
+        if num_to_add > len(r_numbers):
+            print(f"[DEBUG] Not enough R numbers for new *")
+            continue
+
+        used_r_numbers = r_numbers[:]
+
+        for input_idx, input_star_idx in enumerate(input_star_positions):
+            if input_idx < len(frag_star_positions):
+                continue
+
+            attach_idx = min(input_star_idx, frag_rw.GetNumAtoms() - 2)
+            atom = frag_rw.GetAtomWithIdx(attach_idx)
+
+            if atom.GetSymbol() == '*' or any(nb.GetSymbol() == '*' for nb in atom.GetNeighbors()):
+                continue
+
+            new_atom = Chem.Atom("*")
+            new_idx = frag_rw.AddAtom(new_atom)
+            frag_rw.AddBond(attach_idx, new_idx, Chem.BondType.SINGLE)
+
+            r_num = used_r_numbers.pop(0)
+            frag_rw.GetAtomWithIdx(new_idx).SetProp("atomLabel", f"R{r_num}")
+            frag_rw.GetAtomWithIdx(new_idx).SetProp("added_star", "1")
+
+            print(f"[DEBUG] Adding * at frag atom {attach_idx}, marked as R{r_num}")
+
+        frag_final = frag_rw.GetMol()
+        if frag_final is None:
+            continue
+
+        try:
+            Chem.SanitizeMol(frag_final)
+        except Exception:
+            continue
+
+        bad = False
+        for atom in frag_final.GetAtoms():
+            if atom.GetSymbol() == '*':
+                if any(nb.GetSymbol() == '*' for nb in atom.GetNeighbors()):
+                    bad = True
+                    break
+        if bad:
+            continue
+
+        ext_smiles_final = Chem.MolToSmiles(frag_final)
+        print(f"[DEBUG] Input: {cleaned_smiles}, Fragment candidate: {frag_smi}, Selected: {ext_smiles_final}")
+        results.append((frag_final, 0))
+
+    return results
+
+
+def extend_mcs_with_r(valid_molecules, output_folder):
+    generated_smiles = set()
+    original_smiles = set()
+
+    for i, mcs_with_r in enumerate(valid_molecules):
+        smiles = Chem.MolToSmiles(mcs_with_r)
+        generated_smiles.add(smiles)
+        original_smiles.add(smiles)
+
+    for i, mcs_with_r in enumerate(valid_molecules):
+        if mcs_with_r is None:
+            continue
+
+        mol = Chem.RWMol(mcs_with_r)
+        if mol is None:
+            continue
+
+        r_numbers = []
+        for atom in mol.GetAtoms():
+            if atom.HasProp("atomLabel"):
+                label = atom.GetProp("atomLabel")
+                if label.startswith("R"):
+                    num = ''.join(ch for ch in label if ch.isdigit())
+                    if num:
+                        r_numbers.append(int(num))
+        r_numbers = sorted(list(set(r_numbers)))
+
+        star_results = generate_star_extensions(mol)
+        frag_results = apply_fragment_extension_with_r(mol, folder=output_folder, num_input=len(valid_molecules), r_numbers=r_numbers)
+        extended_results = star_results + frag_results
+
+        if not extended_results:
+            continue
+
+        for idx, (mol_copy, pos) in enumerate(extended_results):
+            try:
                 Chem.SanitizeMol(mol_copy)
+            except Exception:
+                continue
 
-                # Compute 2D coordinates for visualization
-                AllChem.Compute2DCoords(mol_copy)
+            extend_smiles = Chem.MolToSmiles(mol_copy)
+            if extend_smiles in generated_smiles:
+                continue
+            if is_equivalent_to_existing(extend_smiles, generated_smiles):
+                continue
+            generated_smiles.add(extend_smiles)
 
-                # Create an image of the molecule using your provided method
-                drawer = Draw.MolDraw2DCairo(300, 300)
-                options = drawer.drawOptions()
-                options.useBWAtomPalette()  # Use black and white atom palette
-                options.colorAtoms = False  # Do not color atoms
-                options.highlightColor = None  # No highlight color
+            AllChem.Compute2DCoords(mol_copy)
+            drawer = Draw.MolDraw2DCairo(300, 300)
+            options = drawer.drawOptions()
+            options.useBWAtomPalette()
+            options.colorAtoms = False
+            options.highlightColor = None
+            drawer.DrawMolecule(mol_copy)
+            drawer.FinishDrawing()
 
-                drawer.DrawMolecule(mol_copy)
-                drawer.FinishDrawing()
+            png_data = drawer.GetDrawingText()
+            img = Image.open(io.BytesIO(png_data)).convert("RGB")
+            img_path = os.path.join(output_folder, f'mcs_with_r_{i + 1}_extended_{idx}_{pos}.png')
+            img.save(img_path)
 
-                # Save the image to the specified output folder
-                png_data = drawer.GetDrawingText()
-                img = Image.open(io.BytesIO(png_data)).convert("RGB")
-                img_path = os.path.join(output_folder, f'mcs_with_r_{i + 1}_extended_{idx}_{pos}.png')  # i starts from 1
-                img.save(img_path)
+            try:
+                mol_for_smiles = Chem.Mol(mol_copy)
+                raw_smiles = Chem.MolToSmiles(mol_for_smiles)
+                smiles_with_r = raw_smiles
+                replaced = set()
+                for atom in mol_for_smiles.GetAtoms():
+                    if atom.HasProp("atomLabel"):
+                        label = atom.GetProp("atomLabel")
+                        if label.startswith("R"):
+                            num = ''.join(ch for ch in label if ch.isdigit())
+                            if not num or num in replaced:
+                                continue
+                            pattern = re.compile(r'\[[^\]]*:' + re.escape(num) + r'\]')
+                            smiles_with_r, nsubs = pattern.subn(label, smiles_with_r, count=1)
+                            if nsubs == 0:
+                                pattern_alt = re.compile(r'\[[^\]]*' + re.escape(num) + r'\]')
+                                smiles_with_r, _ = pattern_alt.subn(label, smiles_with_r, count=1)
+                            replaced.add(num)
 
-        except Exception as e:
-            # Suppress the error and don't raise it or print anything
-            pass  # Ignore any errors silently
-        
-    print(f'2.{generated_smiles}')
-    
-    return generated_smiles
+                txt_path = os.path.join(output_folder, "mcs_with_r_smiles.txt")
+                with open(txt_path, "a", encoding="utf-8") as f:
+                    f.write(f"{i + 1}_extended_{idx}_{pos}. {smiles_with_r}\n")
+
+            except Exception:
+                pass
+
+    return generated_smiles, original_smiles
 
 
 def is_benzene_ring(mol, ring_atoms):
@@ -550,6 +809,7 @@ def is_benzene_ring(mol, ring_atoms):
                 return False
     return True
 
+
 def is_cyclohexane_ring(mol, ring_atoms):
     """Determine if the ring is a cyclohexane (non-aromatic six-membered single-bond carbon ring)"""
     if len(ring_atoms) != 6:
@@ -564,6 +824,7 @@ def is_cyclohexane_ring(mol, ring_atoms):
             if bond.GetBondType() != Chem.BondType.SINGLE:
                 return False
     return True
+
 
 def adjust_nitrogen_hydrogens(atom):
     """Adjust the number of hydrogens on a nitrogen atom to match its valence"""
@@ -591,9 +852,9 @@ def extend_mcs_with_ring(generated_smiles, output_folder):
         if not mol:
             continue
         
-        if is_complex_bicyclic(mol):
-            # print(f"Skipping complex bicyclic structure: {smile}")
-            continue  
+        # if is_complex_bicyclic(mol):
+        #     # print(f"Skipping complex bicyclic structure: {smile}")
+        #     continue  
               
         try:
             Chem.Kekulize(mol)
@@ -708,6 +969,54 @@ def extend_mcs_with_ring(generated_smiles, output_folder):
         img = Image.open(io.BytesIO(png_data)).convert("RGB")
         img_path = os.path.join(output_folder, f'mcs_with_r_ring_{i + 1}_extended_{a1}_{a2}.png')  # i starts from 1 
         img.save(img_path)
+
+
+        # === 新增：输出加环后的 SMILES 到文件（保持R标记与结构一致） ===
+        try:
+            mol_for_smiles = Chem.Mol(new_mol)
+
+            # Step 1: 若原结构中有R标记，则保持原R映射信息（atomLabel）
+            for atom in mol_for_smiles.GetAtoms():
+                if atom.HasProp("atomLabel"):
+                    label = atom.GetProp("atomLabel")
+                    if label.startswith("R"):
+                        num = ''.join(ch for ch in label if ch.isdigit())
+                        if num:
+                            try:
+                                atom.SetAtomMapNum(int(num))
+                            except Exception:
+                                pass
+
+            # Step 2: 导出带映射号的 SMILES
+            raw_smiles = Chem.MolToSmiles(mol_for_smiles)
+
+            # Step 3: 精确替换 [*:n] / [C:n] / [N:n] 等为 Rn
+            smiles_with_r = raw_smiles
+            replaced = set()
+            for atom in mol_for_smiles.GetAtoms():
+                if atom.HasProp("atomLabel"):
+                    label = atom.GetProp("atomLabel")
+                    if label.startswith("R"):
+                        num = ''.join(ch for ch in label if ch.isdigit())
+                        if not num or num in replaced:
+                            continue
+                        pattern = re.compile(r'\[[^\]]*:' + re.escape(num) + r'\]')
+                        smiles_with_r, nsubs = pattern.subn(label, smiles_with_r, count=1)
+                        if nsubs == 0:
+                            # 兼容无冒号形式 [C4]
+                            pattern_alt = re.compile(r'\[[^\]]*' + re.escape(num) + r'\]')
+                            smiles_with_r, _ = pattern_alt.subn(label, smiles_with_r, count=1)
+                        replaced.add(num)
+
+            # Step 4: 写入 SMILES 到同一个文件
+            txt_path = os.path.join(output_folder, "mcs_with_r_smiles.txt")
+            with open(txt_path, "a", encoding="utf-8") as f:
+                f.write(f"{i + 1}_ring_{a1}_{a2}. {smiles_with_r}\n")
+
+        except Exception as e:
+            print(f"[Warning] Failed to write ring-extended SMILES for molecule {i+1}_ring_{a1}_{a2}: {e}")
+        # ===========================================================
+
 
     return
 
