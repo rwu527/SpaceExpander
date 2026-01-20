@@ -11,52 +11,6 @@ import re
 from src import global_counters
 
 
-replace_map = {
-    '\\': '',   # Replace backslash
-    '+': '',    # Replace plus sign
-    '-': '',    # Replace minus sign
-    '/': '',    # Replace slash
-    '*': '',    # Replace asterisk
-    '[': '',    # Replace left bracket
-    ']': '',    # Replace right bracket
-    '@': '', 
-    '#': '≡',
-    '(H)': 'H',
-    'N(=O)O': 'NO2',
-    'C(=O)OH': 'COOH' ,
-    '(=O)(=O)(=O)':  'O3',
-    '(=O)(=O)':  'O2',
-    '(=O)':  'O',   
-    'C(F)(F)F' :'CF3', 
-    '(2H)(2H)2H':'D3',
-    '(3H)(3H)3H':'T3',     
-    '2H': 'D',
-    '(D)(D)(D)':'D3',
-    '(D)(D)':'D2',
-    '3H': 'T',
-    'COH': 'CHO',
-    '(CH3)(CH3)CH3': '(CH3)3',
-    '(CD3)(CD3)CD3': '(CD3)3',
-    '(CH3)CH3': '(CH3)2',
-    '(CD3)CD3': '(CD3)2',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)12',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)11',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)10',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)9',
-    'CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)8',
-    'CH2CH2CH2CH2CH2CH2CH2': '(CH2)7',
-    'CH2CH2CH2CH2CH2CH2': '(CH2)6',
-    'CH2CH2CH2CH2CH2': '(CH2)5',
-    'CH2CH2CH2CH2': '(CH2)4',
-    'CH2CH2CH2': '(CH2)3',
-    'CH2CH2': '(CH2)2',
-    'C≡N': 'CN', 
-    'CH=O': 'CHO',
-    "N=N=N":'N3'
-}
-
-
-
 def is_simple_mcs(mcs_mol):
     atom_count = mcs_mol.GetNumAtoms()
     heavy_atom_count = sum(1 for atom in mcs_mol.GetAtoms() if atom.GetAtomicNum() != 1)  
@@ -484,6 +438,53 @@ def generate_mcs_from_ring(group_fragments, mcs_mapping):
     return mcs_mapping
 
 
+replace_map = {
+    '\\': '',   # Replace backslash
+    '+': '',    # Replace plus sign
+    '-': '',    # Replace minus sign
+    '/': '',    # Replace slash
+    '*': '',    # Replace asterisk
+    '[': '',    # Replace left bracket
+    ']': '',    # Replace right bracket
+    '@': '', 
+    '#': '≡',
+    '(H)': 'H',
+    'N(=O)O': 'NO2',
+    'C(=O)OH': 'COOH' ,
+    '(=O)(=O)(=O)':  'O3',
+    '(=O)(=O)':  'O2',
+    '(=O)':  'O',   
+    'C(F)(F)F' :'CF3', 
+    '(2H)(2H)2H':'D3',
+    '(3H)(3H)3H':'T3',     
+    '2H': 'D',
+    '(D)(D)(D)':'D3',
+    '(D)(D)':'D2',
+    '3H': 'T',
+    'COH': 'CHO',
+    '(CH3)(CH3)CH3': '(CH3)3',
+    '(CD3)(CD3)CD3': '(CD3)3',
+    '(CH3)CH3': '(CH3)2',
+    '(CD3)CD3': '(CD3)2',
+    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)12',
+    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)11',
+    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)10',
+    'CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)9',
+    'CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)8',
+    'CH2CH2CH2CH2CH2CH2CH2': '(CH2)7',
+    'CH2CH2CH2CH2CH2CH2': '(CH2)6',
+    'CH2CH2CH2CH2CH2': '(CH2)5',
+    'CH2CH2CH2CH2': '(CH2)4',
+    'CH2CH2CH2': '(CH2)3',
+    'CH2CH2': '(CH2)2',
+    'C≡N': 'CN', 
+    'CH=O': 'CHO',
+    "N=N=N":'N3',
+    "SO₂O":"SO3H",
+    "SHO=O":"SO2H"
+}
+
+
 def nest_chain(fragments, folder_path):
 
     mcs_counter = 1
@@ -553,6 +554,7 @@ def nest_chain(fragments, folder_path):
                 ring_fragments.append(frag)
             else:
                 non_ring_fragments.append(frag)
+        print (non_ring_fragments)
 
         if non_ring_fragments:
             for non_ring_frag in non_ring_fragments:
@@ -593,8 +595,12 @@ def nest_chain(fragments, folder_path):
                             atom_replacement_map[chosen_atom] = r.replace('=', '').replace('#', '')
                     return smiles
 
-                new_non_ring_smiles = replace_r_with_atom(non_ring_smiles)
-
+                output_file = os.path.join(folder_path, 'mcs_with_r_smiles.txt')
+                output_cont = f"Nest chain MCS: {non_ring_smiles}\n"
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(output_cont)
+                    
+                new_non_ring_smiles = replace_r_with_atom(non_ring_smiles)              
                 mol_with_h = Chem.AddHs(Chem.MolFromSmiles(new_non_ring_smiles)) 
                 mol_formula = Chem.MolToSmiles(mol_with_h, canonical=True)
 
