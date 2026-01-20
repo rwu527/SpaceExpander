@@ -178,7 +178,7 @@ def fragment_and_draw_bond(mol, bond_idx, atom_idx, r_groups, molecule_idx, conn
         frag_mol = Chem.FragmentOnBonds(mol, bond_to_fragment)
         frag_mols = Chem.GetMolFrags(frag_mol, asMols=True)
 
-        if len(frag_mols) >= 2:
+        if len(frag_mols) >= 1:
             frag_to_keep = None
             if is_extra_indices:
                 for frag in frag_mols:
