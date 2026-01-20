@@ -224,61 +224,29 @@ def process_nest_folder(doc, part, folder_path, y_position):
                         nest_chain_mcs.extend(content.split(", "))
 
                 unique_mcs = list(set(nest_chain_mcs))
-                unique_mcs.sort()  
+                unique_mcs.sort()
                 unique_mcs = ["-" + mcs for mcs in unique_mcs]
+
                 expanded_mcs = []
+
                 for mcs in unique_mcs:
-                    mcs_expanded = mcs 
-                    expanded_mcs = []
-                    possible_expansions = []
-                    
-                    if 'CH₂' in mcs:
-                        possible_expansions.append("remove_CH₂")
-                        possible_expansions.append("expand_CH₂")                    
-                        possible_expansions.append("replace_CH₂_with_CO")  # Add the new expansion for CH₂ -> CO
-                    if not mcs.startswith('CH₂'):
-                        possible_expansions.append("add_CH₂_at_start")
+                    mcs_standard = mcs
+                    mcs_standard = mcs_standard.replace('-=', '=')
+                    mcs_standard = mcs_standard.replace('-≡', '≡')
+                    mcs_standard = mcs_standard.replace('()', '')
+                    mcs_standard = compress_ch2_sequence(mcs_standard)
+                    mcs_standard = mcs_standard.replace('()', '')
 
-                    # Process each expansion method, even if some conditions are not met
-                    if "remove_CH₂" in possible_expansions:
-                        mcs_expanded = mcs
-                        mcs_expanded = mcs_expanded.replace('CH₂', '', 1)
-                        expanded_mcs.append(mcs_expanded)
+                    expanded_mcs.append(mcs_standard)
 
-                    if "expand_CH₂" in possible_expansions:
-                        mcs_expanded = mcs
-                        mcs_expanded = mcs_expanded.replace('CH₂', '(CH₂)₂', 1)
-                        expanded_mcs.append(mcs_expanded)
+                # Remove duplicates while preserving order
+                expanded_mcs = list(dict.fromkeys(expanded_mcs))
 
-                    if "add_CH₂_at_start" in possible_expansions:
-                        mcs_expanded = mcs
-                        dash_index = mcs_expanded.find('-')
-                        if dash_index != -1:
-                            mcs_expanded = mcs_expanded[:dash_index + 1] + 'CH₂' + mcs_expanded[dash_index + 1:]
-                        else:
-                            mcs_expanded = 'CH₂' + mcs_expanded
-                        expanded_mcs.append(mcs_expanded)
+                if len(expanded_mcs) == 1:
+                    R_nest_description = expanded_mcs[0] + ";"
+                else:
+                    R_nest_description = ", ".join(expanded_mcs[:-1]) + " or " + expanded_mcs[-1] + ";"
 
-                    # New expansion: Replace CH₂ with CO
-                    if "replace_CH₂_with_CO" in possible_expansions:
-                        mcs_expanded = mcs
-                        mcs_expanded = mcs_expanded.replace('CH₂', 'CO')  # Replace all occurrences of CH₂ with CO
-                        expanded_mcs.append(mcs_expanded)
-
-                    # Further replacements to standardize the mcs_expanded
-                    mcs_expanded = mcs_expanded.replace('-=', '=')
-                    mcs_expanded = mcs_expanded.replace('-≡', '≡')
-                    mcs_expanded = mcs_expanded.replace('()', '')
-                    mcs_expanded = compress_ch2_sequence(mcs_expanded)
-                    mcs_expanded = mcs_expanded.replace('()', '')
-
-                    # Add the original mcs as well
-                    expanded_mcs.append(mcs)
-
-                    # Remove duplicates
-                    expanded_mcs = list(dict.fromkeys(expanded_mcs))  
-
-                R_nest_description = ", ".join(expanded_mcs[:-1]) + " or " + expanded_mcs[-1] + ";"
         return y_position, nest_folder_path, True, R_nest_description, image_paths, form_paths
 
     return y_position, nest_folder_path, False, R_nest_description, [], []
