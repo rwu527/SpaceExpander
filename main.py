@@ -15,6 +15,7 @@ from src.cliams_generate import create_claims
 from src.digital import convert_numbers
 from src import global_counters
 
+
 # Configure logging
 logging.basicConfig(
     filename='application.log',
@@ -88,7 +89,7 @@ def run_pipeline(file_path, output_folder):
 
 if __name__ == "__main__":
     try:
-        input_path = input("Please enter the input file path（SDF or CSV）: ").strip()
+        input_path = input("Please enter the input file path (SDF or CSV): ").strip()
         output_path = os.path.join(os.path.dirname(input_path), "output")
 
         result_folder = run_pipeline(input_path, output_path)
@@ -96,7 +97,7 @@ if __name__ == "__main__":
     except Exception as e:
         error_message = traceback.format_exc()
         logging.error(f"An error occurred:\n{error_message}")
-        print(f"erroe: {e}")
+        print(f" error ：{e}")
 
 
 
