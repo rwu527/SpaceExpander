@@ -5,6 +5,7 @@ import re
 from src.description import description_data 
 
 
+
 def standardize_smiles(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol:
@@ -82,6 +83,8 @@ def fragment_extension(cleaned_smiles, folder):
 
     similarities = []
     for frag_smiles, frag_fp_str in fragment_data.items():
+        if "@" in frag_smiles or "/" in frag_smiles or "\\" in frag_smiles or "[CH]" in frag_smiles:
+            continue
         frag_fp = parse_fingerprint(frag_fp_str)
         similarity = calculate_tanimoto(target_fp, frag_fp)
         similarities.append((similarity, frag_smiles))
@@ -135,14 +138,14 @@ def mol_extension(cleaned_smiles, folder):
         smiles_to_process.append((extension_map[cleaned_smiles], "extended"))
 
     results = []
-    seen_formulas = set()  
+    seen_smiles = set()
 
+    # ---------- Part 1: fingerprint-based extension ----------
     for query_smiles, tag in smiles_to_process:
         try:
             target_fp_str = get_sparse_fingerprint(query_smiles)
             target_fp = parse_fingerprint(target_fp_str)
-        except ValueError as e:
-            print(f"Error processing SMILES {query_smiles}: {e}")
+        except ValueError:
             continue
 
         similarities = []
@@ -156,73 +159,91 @@ def mol_extension(cleaned_smiles, folder):
 
         for _, smiles in top_results:
             mol = Chem.MolFromSmiles(smiles)
-            if mol:
-                ring_info = mol.GetRingInfo()
-                rings = ring_info.AtomRings()
+            if not mol:
+                continue
 
-                if not rings:
-                    mol_with_h = Chem.AddHs(mol)
-                    mol_formula = Chem.MolToSmiles(mol_with_h, canonical=True)
+            if mol.GetRingInfo().AtomRings():
+                continue
 
-                    mol_formula = re.sub(r'\[H\]', 'H', mol_formula)
-                    mol_formula = re.sub(r'\(H\)', 'H', mol_formula)
-                    mol_formula = re.sub(r'H+', lambda m: f'H{len(m.group(0))}' if len(m.group(0)) > 1 else 'H', mol_formula)
+            canonical_smiles = Chem.MolToSmiles(mol, canonical=True)
+            if canonical_smiles not in seen_smiles:
+                seen_smiles.add(canonical_smiles)
+                results.append(canonical_smiles)
 
-                    for old_char, new_char in replace_map.items():
-                        mol_formula = mol_formula.replace(old_char, new_char)
+    # ---------- Part 2: heuristic SMILES expansion ----------
+    heuristic_candidates = set()
 
-                    if mol_formula.startswith('='):
-                        continue
-                    else:
-                        mol_formula = f"-{mol_formula}"
+    if cleaned_smiles.startswith("*"):
+        base = cleaned_smiles[1:]
 
-                    if mol_formula not in seen_formulas:
-                        seen_formulas.add(mol_formula)
-                        results.append(f"Molecule_0_extend.smiles: {mol_formula} ")
+        # basic chain growth
+        heuristic_candidates.add("*C" + base)
+        heuristic_candidates.add("*CC" + base)
+
+        # chain shrink
+        if base.startswith("CC"):
+            heuristic_candidates.add("*C" + base[2:])
+
+        # carbonyl substitution
+        for i in range(len(base)):
+            if base[i] == "C":
+                heuristic_candidates.add("*" + base[:i] + "C(=O)" + base[i+1:])
+
+        # C -> CC expansion
+        for i in range(len(base)):
+            if base[i] == "C":
+                heuristic_candidates.add("*" + base[:i] + "CC" + base[i+1:])
+
+    # validate heuristic candidates with RDKit
+    for smi in heuristic_candidates:
+        mol = Chem.MolFromSmiles(smi)
+        if not mol:
+            continue
+
+        invalid = False
+
+        for atom in mol.GetAtoms():
+            smarts = atom.GetSmarts()
+
+            if smarts.startswith("[") and atom.GetSymbol() == "C":
+                invalid = True
+                break
+
+            if atom.GetNumRadicalElectrons() != 0:
+                invalid = True
+                break
+
+            symbol = atom.GetSymbol()
+            valence = atom.GetTotalValence()
+
+            if symbol == "C" and valence > 4:
+                invalid = True
+                break
+            if symbol == "O" and valence > 2:
+                invalid = True
+                break
+            if symbol == "N" and valence > 3:
+                invalid = True
+                break
+
+        if invalid:
+            continue
+
+        for atom in mol.GetAtoms():
+            if atom.GetSymbol() == "*":
+                for nbr in atom.GetNeighbors():
+                    if nbr.GetSymbol() in ("O", "N"):
+                        invalid = True
+                        break
+            if invalid:
+                break
+
+        if invalid:
+            continue
+
+        canonical = Chem.MolToSmiles(mol, canonical=True)
+        if canonical not in seen_smiles:
+            seen_smiles.add(canonical)
+            results.append(canonical)
 
     return results
-
-
-replace_map = {
-    '\\': '',   # Replace backslash
-    '+': '',    # Replace plus sign
-    '-': '',    # Replace minus sign
-    '/': '',    # Replace slash
-    '*': '',    # Replace asterisk
-    '[': '',    # Replace left bracket
-    ']': '',    # Replace right bracket
-    '@': '', 
-    '#': '≡',
-    '(H)': 'H',
-    'N(=O)O': 'NO2',
-    'C(=O)OH': 'COOH' ,
-    '(=O)(=O)(=O)':  'O3',
-    '(=O)(=O)':  'O2',
-    '(=O)':  'O',   
-    'C(F)(F)F' :'CF3', 
-    '(2H)(2H)2H':'D3',
-    '(3H)(3H)3H':'T3',     
-    '2H': 'D',
-    '(D)(D)(D)':'D3',
-    '(D)(D)':'D2',
-    '3H': 'T',
-    'COH': 'CHO',
-    '(CH3)(CH3)CH3': '(CH3)3',
-    '(CD3)(CD3)CD3': '(CD3)3',
-    '(CH3)CH3': '(CH3)2',
-    '(CD3)CD3': '(CD3)2',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)12',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)11',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)10',
-    'CH2CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)9',
-    'CH2CH2CH2CH2CH2CH2CH2CH2': '(CH2)8',
-    'CH2CH2CH2CH2CH2CH2CH2': '(CH2)7',
-    'CH2CH2CH2CH2CH2CH2': '(CH2)6',
-    'CH2CH2CH2CH2CH2': '(CH2)5',
-    'CH2CH2CH2CH2': '(CH2)4',
-    'CH2CH2CH2': '(CH2)3',
-    'CH2CH2': '(CH2)2',
-    'C≡N': 'CN', 
-    'CH=O': 'CHO',
-    "N=N=N":'N3'
-}
