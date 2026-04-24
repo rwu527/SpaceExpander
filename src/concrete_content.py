@@ -336,13 +336,37 @@ def check_mcs_2(mcs_smiles, molecule_mcs):
     return mcs_smiles, {}
 
 
+def _ring_atoms_to_bond_indices(mol, ring_atoms):
+    ring_atoms = list(ring_atoms)
+    bond_indices = []
+
+    for i in range(len(ring_atoms)):
+        a1 = ring_atoms[i]
+        a2 = ring_atoms[(i + 1) % len(ring_atoms)]
+        bond = mol.GetBondBetweenAtoms(a1, a2)
+        if bond is None:
+            return None
+        bond_indices.append(bond.GetIdx())
+
+    return bond_indices
+
+
+def _safe_ring_submol(mol, ring_atoms):
+    bond_indices = _ring_atoms_to_bond_indices(mol, ring_atoms)
+    if not bond_indices:
+        return None
+
+    submol = Chem.PathToSubmol(mol, bond_indices)
+
+    try:
+        Chem.FastFindRings(submol)
+    except Exception:
+        pass
+
+    return submol
+
         
 def is_valid_mcs(mcs_smiles, molecule_mcs, min_ring_atoms=8):
-    """
-    Validate if the MCS is structurally trustworthy.
-    - If it contains any ring with too many atoms (e.g., >= 8), that ring is considered suspicious.
-    - Extract the large ring(s) as individual substructures and check if they appear in ALL molecules.
-    """
     try:
         mcs_mol = Chem.MolFromSmarts(mcs_smiles)
         if not mcs_mol:
@@ -350,6 +374,7 @@ def is_valid_mcs(mcs_smiles, molecule_mcs, min_ring_atoms=8):
             return False
 
         Chem.SanitizeMol(mcs_mol)
+        Chem.FastFindRings(mcs_mol)
 
         ring_info = mcs_mol.GetRingInfo()
         ring_atom_lists = ring_info.AtomRings()
@@ -357,27 +382,41 @@ def is_valid_mcs(mcs_smiles, molecule_mcs, min_ring_atoms=8):
 
         print(f"[MCS Validation] Ring count: {len(ring_atom_lists)}, Atom count: {atom_count}")
 
-        for ring_id, ring_atoms in enumerate(ring_atom_lists):
+        for ring_atoms in ring_atom_lists:
             if len(ring_atoms) >= min_ring_atoms:
                 print(f"[MCS Validation] Detected suspicious large ring (size {len(ring_atoms)}). Verifying its presence in all molecules...")
 
-                # Extract this large ring as a substructure
-                large_ring = Chem.PathToSubmol(mcs_mol, ring_atoms)
+                large_ring = _safe_ring_submol(mcs_mol, ring_atoms)
+                if large_ring is None:
+                    print("[MCS Validation] Failed to extract large ring safely.")
+                    return False
 
-                # Check if ALL molecules contain this exact ring
+                try:
+                    Chem.SanitizeMol(large_ring)
+                except Exception:
+                    pass
+
+                try:
+                    Chem.FastFindRings(large_ring)
+                except Exception:
+                    pass
+
                 for i, mol in enumerate(molecule_mcs):
-                    found = False
-                    for mol_ring_atoms in mol.GetRingInfo().AtomRings():
-                        subring = Chem.PathToSubmol(mol, mol_ring_atoms)
-                        if subring.HasSubstructMatch(large_ring):
-                            found = True
-                            break
-                    if not found:
+                    if mol is None:
+                        print(f"[MCS Validation] Molecule {i} is None.")
+                        return False
+
+                    try:
+                        Chem.FastFindRings(mol)
+                    except Exception:
+                        pass
+
+                    if not mol.HasSubstructMatch(large_ring):
                         print(f"[MCS Validation] Molecule {i} does NOT contain the large ring.")
                         return False
 
                 print("[MCS Validation] Large ring is confirmed present in all molecules.")
-        
+
         print("[MCS Validation] No suspicious large rings found, or all verified. Accepting MCS.")
         return True
 
