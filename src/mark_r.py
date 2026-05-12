@@ -18,12 +18,64 @@ from src.extend import get_sparse_fingerprint, parse_fingerprint, calculate_tani
 from src import global_counters
 
 
+def _clean_replacement_symbols(replaced_atoms):
+    cleaned = []
+    seen = set()
+
+    for atom in replaced_atoms:
+        if atom is None:
+            continue
+
+        symbol = str(atom).strip()
+        if not symbol or symbol in {"*", "[*]"}:
+            continue
+
+        if symbol not in seen:
+            cleaned.append(symbol)
+            seen.add(symbol)
+
+    return cleaned
+
+
+def _get_original_symbols_for_mcs_atom(molecule_list, mcs_mol, mcs_atom_idx):
+    symbols = []
+    seen = set()
+
+    for mol in molecule_list:
+        if mol is None:
+            continue
+
+        match = mol.GetSubstructMatch(mcs_mol)
+        if not match or mcs_atom_idx >= len(match):
+            continue
+
+        original_atom_idx = match[mcs_atom_idx]
+        atom = mol.GetAtomWithIdx(original_atom_idx)
+        symbol = atom.GetSymbol()
+
+        if symbol and symbol not in {"*", "[*]"} and symbol not in seen:
+            symbols.append(symbol)
+            seen.add(symbol)
+
+    if not symbols and mcs_atom_idx < mcs_mol.GetNumAtoms():
+        atom = mcs_mol.GetAtomWithIdx(mcs_atom_idx)
+        symbol = atom.GetSymbol()
+        if symbol and symbol not in {"*", "[*]"}:
+            symbols.append(symbol)
+
+    return symbols
+
+
+def _has_non_carbon_replacement(symbols):
+    return any(symbol not in {"C", "H"} for symbol in symbols)
+
 
 def mark_mcs_with_r(molecule_list, mcs_smiles, output_folder, differences):
-
     mcs_mol = Chem.MolFromSmarts(mcs_smiles)
     if not mcs_mol:
         return None, None, None, None, None
+
+    original_mcs_atom_count = mcs_mol.GetNumAtoms()
 
     r_group_counts = {idx: 0 for idx in range(mcs_mol.GetNumAtoms())}
     mcs_with_r = Chem.RWMol(mcs_mol)
@@ -38,6 +90,7 @@ def mark_mcs_with_r(molecule_list, mcs_smiles, output_folder, differences):
     for mol in molecule_list:
         match = mol.GetSubstructMatch(mcs_mol)
         r_group_temp_counts = {idx: 0 for idx in range(mcs_mol.GetNumAtoms())}
+
         for atom_idx in range(mol.GetNumAtoms()):
             if atom_idx not in match:
                 for neighbor in mol.GetAtomWithIdx(atom_idx).GetNeighbors():
@@ -45,132 +98,201 @@ def mark_mcs_with_r(molecule_list, mcs_smiles, output_folder, differences):
                     if neighbor_idx in match:
                         r_atom_idx = match.index(neighbor_idx)
                         r_group_temp_counts[r_atom_idx] += 1
+
         for idx in r_group_temp_counts:
             r_group_counts[idx] = max(r_group_counts[idx], r_group_temp_counts[idx])
-            
+
     for r_atom_idx, count in r_group_counts.items():
         for _ in range(count):
             if mcs_with_r.GetAtomWithIdx(r_atom_idx).GetDegree() == 1:
                 if r_atom_idx not in r_group_mapping:
-                    r_group_mapping[r_atom_idx] = f'R{str(global_counters.global_r_group_counter)}'
+                    r_group_mapping[r_atom_idx] = f"R{str(global_counters.global_r_group_counter)}"
                     global_counters.global_r_group_counter += 1
+
                 r_group_atom = mcs_with_r.GetAtomWithIdx(r_atom_idx)
-                r_group_atom.SetProp('atomLabel', r_group_mapping[r_atom_idx])
+                r_group_atom.SetProp("atomLabel", r_group_mapping[r_atom_idx])
+
                 for neighbor in r_group_atom.GetNeighbors():
                     atom_indices.add(neighbor.GetIdx())
             else:
                 r_group_atom = Chem.Atom(0)
                 r_group_idx = mcs_with_r.AddAtom(r_group_atom)
                 mcs_with_r.AddBond(r_atom_idx, r_group_idx, Chem.BondType.SINGLE)
-                r_group_mapping[r_group_idx] = f'R{(str(global_counters.global_r_group_counter))}'
-                mcs_with_r.GetAtomWithIdx(r_group_idx).SetProp('atomLabel', r_group_mapping[r_group_idx])
+
+                r_group_mapping[r_group_idx] = f"R{str(global_counters.global_r_group_counter)}"
+                mcs_with_r.GetAtomWithIdx(r_group_idx).SetProp("atomLabel", r_group_mapping[r_group_idx])
+
                 atom_indices.add(r_atom_idx)
                 global_counters.global_r_group_counter += 1
 
-    for atom_idx in range(mcs_with_r.GetNumAtoms()):
-        atom = mcs_with_r.GetAtomWithIdx(atom_idx)
-        atom_symbol = atom.GetSymbol()
-
-    rings = rdmolops.GetSymmSSSR(mcs_with_r)
+    rings = rdmolops.GetSymmSSSR(mcs_mol)
 
     for ring in rings:
         for atom_idx in ring:
-            atom = mcs_with_r.GetAtomWithIdx(atom_idx)
-            atom_symbol = atom.GetSymbol()
-            if atom_symbol != 'C':
-                found_non_carbon_in_rings = True
-                if atom_idx not in r_group_mapping:  # Exclude atoms already labeled as R
-                    if atom_idx not in x_group_mapping:  # Prevent duplicate labeling
-                        x_group_mapping[atom_idx] = f'X{(str(global_counters.global_x_group_counter))}'
-                        global_counters.global_x_group_counter += 1
-                    mcs_with_r.ReplaceAtom(atom_idx, Chem.Atom(0))
-                    x_group_atom = mcs_with_r.GetAtomWithIdx(atom_idx)
-                    x_group_atom.SetProp('atomLabel', x_group_mapping[atom_idx])
-                    if x_group_mapping[atom_idx] not in non_carbon_atom_replacements:
-                        non_carbon_atom_replacements[x_group_mapping[atom_idx]] = []
-                    non_carbon_atom_replacements[x_group_mapping[atom_idx]].append(atom_symbol)
+            atom_idx = int(atom_idx)
 
-    # Handle remaining atoms and bonds
-    for atom_idx in range(mcs_with_r.GetNumAtoms()):
+            if atom_idx >= original_mcs_atom_count:
+                continue
+
+            if atom_idx in r_group_mapping:
+                continue
+
+            if atom_idx in x_group_mapping:
+                continue
+
+            replacement_symbols = _get_original_symbols_for_mcs_atom(
+                molecule_list,
+                mcs_mol,
+                atom_idx
+            )
+
+            if not replacement_symbols:
+                continue
+
+            if not _has_non_carbon_replacement(replacement_symbols):
+                continue
+
+            source_atom = mcs_mol.GetAtomWithIdx(atom_idx)
+            source_symbol = source_atom.GetSymbol()
+
+            if source_symbol in {"C", "H"} and set(replacement_symbols).issubset({"C", "H"}):
+                continue
+
+            x_group_mapping[atom_idx] = f"X{str(global_counters.global_x_group_counter)}"
+            global_counters.global_x_group_counter += 1
+
+            mcs_with_r.ReplaceAtom(atom_idx, Chem.Atom(0))
+            x_group_atom = mcs_with_r.GetAtomWithIdx(atom_idx)
+            x_group_atom.SetProp("atomLabel", x_group_mapping[atom_idx])
+
+            non_carbon_atom_replacements[x_group_mapping[atom_idx]] = replacement_symbols
+
+    for atom_idx in range(original_mcs_atom_count):
+        if atom_idx in r_group_mapping:
+            continue
+
+        if atom_idx in x_group_mapping:
+            continue
+
         atom = mcs_with_r.GetAtomWithIdx(atom_idx)
-        if atom.GetSymbol() not in ['C', 'H']:
-            if atom.GetDegree() == 1 and len(atom.GetNeighbors()) == 1:
-                neighbor_idx = atom.GetNeighbors()[0].GetIdx()
-                if atom_idx not in r_group_mapping:  # Ensure it's not an R atom
-                    if atom_idx not in z_group_mapping:  # Prevent duplicate labeling
-                        z_group_mapping[atom_idx] = f'Z{(str(global_counters.global_z_group_counter))}'
-                        global_counters.global_z_group_counter += 1
-                    atom.SetProp('atomLabel', z_group_mapping[atom_idx])
-                    if z_group_mapping[atom_idx] not in z_group_replacements:
-                        z_group_replacements[z_group_mapping[atom_idx]] = []
-                    z_group_replacements[z_group_mapping[atom_idx]].append(atom.GetSymbol())
-                       
-    # Handle bonds
+
+        if atom.HasProp("atomLabel"):
+            label = atom.GetProp("atomLabel")
+            if label.startswith(("R", "X")):
+                continue
+
+        if atom.GetDegree() != 1 or len(atom.GetNeighbors()) != 1:
+            continue
+
+        replacement_symbols = _get_original_symbols_for_mcs_atom(
+            molecule_list,
+            mcs_mol,
+            atom_idx
+        )
+
+        if not replacement_symbols:
+            continue
+
+        if not _has_non_carbon_replacement(replacement_symbols):
+            continue
+
+        z_group_mapping[atom_idx] = f"Z{str(global_counters.global_z_group_counter)}"
+        global_counters.global_z_group_counter += 1
+
+        atom.SetProp("atomLabel", z_group_mapping[atom_idx])
+        z_group_replacements[z_group_mapping[atom_idx]] = replacement_symbols
+
     for bond in mcs_with_r.GetBonds():
         begin_idx = bond.GetBeginAtomIdx()
         end_idx = bond.GetEndAtomIdx()
-        if (begin_idx in atom_indices or end_idx in atom_indices) and not (begin_idx in r_group_mapping or end_idx in r_group_mapping):
+
+        if (begin_idx in atom_indices or end_idx in atom_indices) and not (
+            begin_idx in r_group_mapping or end_idx in r_group_mapping
+        ):
             bond_indices.append((begin_idx, end_idx))
 
     atom_r_mapping = {}
+
     for atom_idx in atom_indices:
         connected_r_groups = []
+
         for neighbor in mcs_with_r.GetAtomWithIdx(atom_idx).GetNeighbors():
             neighbor_idx = neighbor.GetIdx()
             if neighbor_idx in r_group_mapping:
                 connected_r_groups.append(r_group_mapping[neighbor_idx])
+
         atom_r_mapping[atom_idx] = connected_r_groups
 
-    original_atom_mappings = map_indices_to_original(molecule_list, mcs_mol, atom_r_mapping)
-    original_bond_mappings = map_bonds_to_original(molecule_list, mcs_mol, bond_indices)
-    
-    # Check N atoms and label H
+    original_atom_mappings = map_indices_to_original(
+        molecule_list,
+        mcs_mol,
+        atom_r_mapping
+    )
+
+    original_bond_mappings = map_bonds_to_original(
+        molecule_list,
+        mcs_mol,
+        bond_indices
+    )
+
     for atom_idx in range(mcs_with_r.GetNumAtoms()):
         atom = mcs_with_r.GetAtomWithIdx(atom_idx)
-        if atom.GetSymbol() == 'N' and atom.GetDegree() == 2:
-            single_bonds = sum(1 for bond in atom.GetBonds() if bond.GetBondType() == Chem.BondType.SINGLE)
-            
-            if single_bonds == 2:  # If it is a -N- structure
-                # Directly label hydrogen atom without adding actual bonds
-                atom.SetProp('atomLabel', 'NH')  # Set nitrogen atom label to 'NH'
 
-    # Now generate output for X and Z groups
-    x_groups_created = set()  # Used to track created X group folders
+        if atom.GetSymbol() == "N" and atom.GetDegree() == 2:
+            single_bonds = sum(
+                1 for bond in atom.GetBonds()
+                if bond.GetBondType() == Chem.BondType.SINGLE
+            )
+
+            if single_bonds == 2:
+                atom.SetProp("atomLabel", "NH")
+
     for x_group, replaced_atoms in non_carbon_atom_replacements.items():
-        if not replaced_atoms:
-            del x_group_mapping[x_group]
-        else:
-            create_x_group_folder(output_folder, x_group, replaced_atoms)
-            x_groups_created.add(x_group)
+        create_x_group_folder(output_folder, x_group, replaced_atoms)
 
-    z_groups_created = set()  # Used to track created Z group folders
     for z_group, replaced_atoms in z_group_replacements.items():
-        if not replaced_atoms:
-            del z_group_mapping[z_group]
-        else:
-            create_z_group_folder(output_folder, z_group, replaced_atoms)
-            z_groups_created.add(z_group)
+        create_z_group_folder(output_folder, z_group, replaced_atoms)
 
-    return mcs_with_r, list(atom_indices), bond_indices, original_atom_mappings, original_bond_mappings
+    return (
+        mcs_with_r,
+        list(atom_indices),
+        bond_indices,
+        original_atom_mappings,
+        original_bond_mappings
+    )
 
 
 def create_z_group_folder(output_folder, z_group, replaced_atoms):
+    replaced_atoms = _clean_replacement_symbols(replaced_atoms)
+
+    if not replaced_atoms:
+        return
+
     z_group_folder = os.path.join(output_folder, z_group)
     os.makedirs(z_group_folder, exist_ok=True)
-    z_group_file = os.path.join(z_group_folder, 'replacements.txt')
-    with open(z_group_file, 'w') as f:
+
+    z_group_file = os.path.join(z_group_folder, "replacements.txt")
+
+    with open(z_group_file, "w") as f:
         for atom in replaced_atoms:
-            f.write(f'{atom}\n')
+            f.write(f"{atom}\n")
 
 
 def create_x_group_folder(output_folder, x_group, replaced_atoms):
+    replaced_atoms = _clean_replacement_symbols(replaced_atoms)
+
+    if not replaced_atoms:
+        return
+
     x_group_folder = os.path.join(output_folder, x_group)
     os.makedirs(x_group_folder, exist_ok=True)
-    x_group_file = os.path.join(x_group_folder, 'replacements.txt')
-    with open(x_group_file, 'w') as f:
-        for atom in replaced_atoms:
-            f.write(f'{atom}\n')
 
+    x_group_file = os.path.join(x_group_folder, "replacements.txt")
+
+    with open(x_group_file, "w") as f:
+        for atom in replaced_atoms:
+            f.write(f"{atom}\n")
+            
 
 def map_indices_to_original(molecule_list, mcs_mol, atom_r_mapping):
     original_mappings = []
@@ -971,11 +1093,9 @@ def extend_mcs_with_ring(generated_smiles, output_folder):
         img.save(img_path)
 
 
-        # === 新增：输出加环后的 SMILES 到文件（保持R标记与结构一致） ===
         try:
             mol_for_smiles = Chem.Mol(new_mol)
 
-            # Step 1: 若原结构中有R标记，则保持原R映射信息（atomLabel）
             for atom in mol_for_smiles.GetAtoms():
                 if atom.HasProp("atomLabel"):
                     label = atom.GetProp("atomLabel")
@@ -987,10 +1107,8 @@ def extend_mcs_with_ring(generated_smiles, output_folder):
                             except Exception:
                                 pass
 
-            # Step 2: 导出带映射号的 SMILES
             raw_smiles = Chem.MolToSmiles(mol_for_smiles)
 
-            # Step 3: 精确替换 [*:n] / [C:n] / [N:n] 等为 Rn
             smiles_with_r = raw_smiles
             replaced = set()
             for atom in mol_for_smiles.GetAtoms():
@@ -1003,12 +1121,10 @@ def extend_mcs_with_ring(generated_smiles, output_folder):
                         pattern = re.compile(r'\[[^\]]*:' + re.escape(num) + r'\]')
                         smiles_with_r, nsubs = pattern.subn(label, smiles_with_r, count=1)
                         if nsubs == 0:
-                            # 兼容无冒号形式 [C4]
                             pattern_alt = re.compile(r'\[[^\]]*' + re.escape(num) + r'\]')
                             smiles_with_r, _ = pattern_alt.subn(label, smiles_with_r, count=1)
                         replaced.add(num)
 
-            # Step 4: 写入 SMILES 到同一个文件
             txt_path = os.path.join(output_folder, "mcs_with_r_smiles.txt")
             with open(txt_path, "a", encoding="utf-8") as f:
                 f.write(f"{i + 1}_ring_{a1}_{a2}. {smiles_with_r}\n")
